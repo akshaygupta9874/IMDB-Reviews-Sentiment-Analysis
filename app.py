@@ -121,7 +121,7 @@ if st.button("Analyze with All Models"):
             st.title(" ".join(["⭐"] * stars))
             st.write(f"Aggregate Score: {avg_pos*100:.1f}%")
 
-st.sidebar.markdown("### 🏆 Internship Spotlight")
+st.sidebar.markdown("### Project on Sentiment Analysis ")
 st.sidebar.info("""
 **Architecture Comparison:**
 - **ML:** High speed, low resource.
