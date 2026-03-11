@@ -1,17 +1,20 @@
 
-
 import streamlit as st
 import joblib
 import re
 import nltk
+import time
+import pandas as pd
 import matplotlib.pyplot as plt
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from wordcloud import WordCloud
-from transformers import pipeline
+from transformers import pipeline as bert_pipeline
+import tensorflow as tf
+from tensorflow.keras.preprocessing.sequence import pad_sequences
 
 # ---------- Page Configuration ----------
-st.set_page_config(page_title="NLP Sentiment Suite", page_icon="📚", layout="wide")
+st.set_page_config(page_title="IMDb Sentiment Benchmarking", page_icon="🎬", layout="wide")
 
 # ---------- Resources & Downloads ----------
 @st.cache_resource
@@ -21,13 +24,17 @@ def download_nltk_data():
 
 @st.cache_resource
 def load_ml_pipeline():
-    """Loads the Scikit-Learn Pipeline (Logistic Regression)"""
-    return joblib.load("sentiment_pipeline.pkl")
+    return joblib.load("imdb_pipeline.pkl") 
+
+@st.cache_resource
+def load_lstm_assets():
+    model = tf.keras.models.load_model("imdb_lstm_model.h5")
+    tokenizer = joblib.load("imdb_tokenizer.pkl")
+    return model, tokenizer
 
 @st.cache_resource
 def load_bert_pipeline():
-    """Loads DistilBERT for Deep Learning inference"""
-    return pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
+    return bert_pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
 
 download_nltk_data()
 lemmatizer = WordNetLemmatizer()
@@ -35,94 +42,89 @@ stop_words = set(stopwords.words("english"))
 
 # ---------- Text Cleaning Logic ----------
 def clean_input(text):
-    """Processes text for ML model and Word Cloud"""
+    text = re.sub(r'<.*?>', '', text) 
     text = re.sub(r'[^a-zA-Z\s]', '', text.lower())
     words = text.split()
-    # Preserving negation words is a 'best practice' for sentiment nuance
     negation_words = {"not", "no", "never", "neither", "nor"}
     cleaned = [lemmatizer.lemmatize(w) for w in words if w not in stop_words or w in negation_words]
     return " ".join(cleaned)
 
-# ---------- Sidebar & Info ----------
-st.sidebar.title("🛠️ Model Architecture")
-model_choice = st.sidebar.radio(
-    "Select Model Type:",
-    ("Logistic Regression (85% Accuracy)", "BERT Transformer (Deep Learning)")
-)
-
-st.sidebar.divider()
-st.sidebar.info("""
-**Project Details:**
-- **Developer:** BCSE Student, JU
-- **Backend:** Python/Scikit-Learn/HuggingFace
-- **Frontend:** Streamlit
+# ---------- UI Content ----------
+st.title("🎬 IMDb Triple-Model Sentiment Suite")
+st.markdown("""
+Enter a movie review below. This app will process your input through **three different AI architectures** simultaneously to compare their accuracy and speed.
 """)
 
-# ---------- Main UI ----------
-st.title("🚀 Advanced Sentiment Analysis Suite")
-st.markdown("Compare a optimized **Logistic Regression** baseline against a **BERT Transformer** model.")
+user_input = st.text_area("Review Input:", placeholder="The cinematography was brilliant, but the plot felt rushed...", height=150)
 
-# Example Reviews for Demo
-examples = [
-    "This book changed my life. Absolutely incredible writing!",
-    "Total waste of time. The formatting is terrible and full of bugs.",
-    "Not the best I've read, but the plot was interesting enough."
-]
-example_choice = st.selectbox("Quick Demo Examples:", [""] + examples)
-
-user_input = st.text_area("Enter Kindle Review Text:", value=example_choice, height=180)
-
-# ---------- Execution Logic ----------
-if st.button("Run Full Analysis"):
+if st.button("Analyze with All Models"):
     if not user_input.strip():
-        st.warning("Please enter some text to analyze.")
+        st.warning("Please enter some text.")
     else:
-        with st.spinner(f"Processing with {model_choice}..."):
-            
-            # --- Model Inference ---
-            if model_choice == "Logistic Regression (85% Accuracy)":
-                model = load_ml_pipeline()
-                cleaned_text = clean_input(user_input)
-                prediction = model.predict([cleaned_text])[0]
-                probs = model.predict_proba([cleaned_text])[0]
-                
-                pos_score, neg_score = probs[1] * 100, probs[0] * 100
-                sentiment_label = "POSITIVE 😊" if prediction == 1 else "NEGATIVE 😞"
-            
-            else:
-                # BERT handles internal tokenization (Transfer Learning)
-                bert = load_bert_pipeline()
-                result = bert(user_input[:512])[0]
-                label_raw = result['label']
-                conf = result['score'] * 100
-                
-                sentiment_label = "POSITIVE 😊" if label_raw == "POSITIVE" else "NEGATIVE 😞"
-                pos_score = conf if label_raw == "POSITIVE" else (100 - conf)
-                neg_score = conf if label_raw == "NEGATIVE" else (100 - conf)
+        results = []
+        
+        # --- 1. Logistic Regression (ML) ---
+        with st.spinner("Running Statistical ML..."):
+            t0 = time.time()
+            ml_model = load_ml_pipeline()
+            cleaned = clean_input(user_input)
+            pred = ml_model.predict([cleaned])[0]
+            prob = ml_model.predict_proba([cleaned])[0]
+            score = prob[1] * 100 if pred == 1 else prob[0] * 100
+            t_ml = time.time() - t0
+            results.append({"Model": "Logistic Regression", "Sentiment": "Positive" if pred == 1 else "Negative", "Confidence": f"{score:.1f}%", "Latency": f"{t_ml:.4f}s"})
 
-            # --- Results Display ---
-            st.divider()
-            col_metric1, col_metric2 = st.columns(2)
-            col_metric1.metric("Predicted Sentiment", sentiment_label)
-            col_metric2.metric("Confidence Level", f"{max(pos_score, neg_score):.2f}%")
+        # --- 2. LSTM (Deep Learning) ---
+        with st.spinner("Running Custom LSTM..."):
+            t0 = time.time()
+            lstm_model, tokenizer = load_lstm_assets()
+            cleaned = clean_input(user_input)
+            seq = tokenizer.texts_to_sequences([cleaned])
+            padded = pad_sequences(seq, maxlen=100)
+            score_raw = float(lstm_model.predict(padded)[0][0])
+            t_lstm = time.time() - t0
+            sentiment = "Positive" if score_raw > 0.5 else "Negative"
+            conf = score_raw * 100 if score_raw > 0.5 else (1-score_raw) * 100
+            results.append({"Model": "Custom LSTM (RNN)", "Sentiment": sentiment, "Confidence": f"{conf:.1f}%", "Latency": f"{t_lstm:.4f}s"})
 
-            # --- Score Visuals ---
-            st.write("### 📊 Probability Breakdown")
-            c1, c2 = st.columns(2)
-            c1.write(f"**Positivity:** {pos_score:.1f}%")
-            c1.progress(int(pos_score))
-            c2.write(f"**Negativity:** {neg_score:.1f}%")
-            c2.progress(int(neg_score))
+        # --- 3. BERT (Transformer) ---
+        with st.spinner("Running BERT Transformer..."):
+            t0 = time.time()
+            bert = load_bert_pipeline()
+            res = bert(user_input[:512])[0]
+            t_bert = time.time() - t0
+            results.append({"Model": "BERT Transformer", "Sentiment": res['label'].capitalize(), "Confidence": f"{res['score']*100:.1f}%", "Latency": f"{t_bert:.4f}s"})
 
-            # --- Word Cloud ---
-            st.subheader("🔠 Semantic Word Cloud")
+        # ---------- Display Comparison Table ----------
+        st.divider()
+        st.subheader("📊 Model Benchmark Comparison")
+        st.table(pd.DataFrame(results))
+
+        # ---------- Visual Breakdown ----------
+        st.subheader("💡 Visual Insights")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Word Importance (Cloud)**")
             cloud_text = clean_input(user_input)
-            if len(cloud_text.split()) > 1:
-                
-                wordcloud = WordCloud(background_color="white", width=800, height=400, colormap='coolwarm').generate(cloud_text)
-                fig, ax = plt.subplots()
-                ax.imshow(wordcloud, interpolation='bilinear')
-                ax.axis("off")
-                st.pyplot(fig)
-            else:
-                st.info("Word Cloud requires more descriptive text.")
+            wordcloud = WordCloud(background_color="white", width=800, height=400, colormap='viridis').generate(cloud_text)
+            fig, ax = plt.subplots()
+            ax.imshow(wordcloud, interpolation='bilinear')
+            ax.axis("off")
+            st.pyplot(fig)
+            
+        with col2:
+            st.write("**Star Rating (Based on Average Confidence)**")
+            avg_pos = (score if results[0]['Sentiment'] == "Positive" else (100-score)) / 100
+            stars = int(avg_pos * 5)
+            if stars == 0 and avg_pos > 0: stars = 1
+            st.title(" ".join(["⭐"] * stars))
+            st.write(f"Aggregate Score: {avg_pos*100:.1f}%")
+
+st.sidebar.markdown("### 🏆 Internship Spotlight")
+st.sidebar.info("""
+**Architecture Comparison:**
+- **ML:** High speed, low resource.
+- **LSTM:** Context-aware memory.
+- **BERT:** State-of-the-art attention.
+""")
