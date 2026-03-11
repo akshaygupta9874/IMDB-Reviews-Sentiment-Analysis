@@ -11,3 +11,4 @@ scikit-learn
 wordcloud
 matplotlib
 tiktoken
+tensorflow
